@@ -1,41 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Optional
 import pandas as pd
 import numpy as np
-
-FIBS = (0.382, 0.5, 0.618, 0.786)
-
-@dataclass
-class Swing:
-    index: int
-    price: float
-    kind: str
 
 @dataclass
 class OrderBlock:
     direction: str
-    high: float
     low: float
+    high: float
     start_index: int
     end_index: int
-    impulse_end: int
     base_count: int
-    displacement_atr: float
-    status: str = "fresh"
+    strength: float
+    major: bool = False
     touches: int = 0
-    @property
-    def mid(self): return (self.high + self.low) / 2.0
-
-@dataclass
-class FibMap:
-    direction: str
-    a_index: int
-    b_index: int
-    a_price: float
-    b_price: float
-    levels: dict
+    status: str = "fresh"
 
 @dataclass
 class Setup:
@@ -47,248 +27,179 @@ class Setup:
     tp3: float
     rr1: float
     bias: str
-    trend: str
-    regime: str
+    supertrend: str
+    bos: str
     ob_type: str
     ob_low: float
     ob_high: float
-    fib_level: Optional[float]
-    fib_price: Optional[float]
-    fib_distance_atr: Optional[float]
-    swing_a: float
-    swing_b: float
-    score: int
+    major: bool
+    ob_count: int
     reason: str
 
 
 def atr(df, n=14):
-    h, l, c = df.high, df.low, df.close
-    tr = pd.concat([(h-l), (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+    tr = pd.concat([(df.high-df.low), (df.high-df.close.shift()).abs(), (df.low-df.close.shift()).abs()], axis=1).max(axis=1)
     return tr.rolling(n, min_periods=n).mean()
+
+
+def supertrend(df, period=10, multiplier=3.0):
+    a = atr(df, period)
+    hl2 = (df.high + df.low) / 2
+    upper = hl2 + multiplier*a
+    lower = hl2 - multiplier*a
+    fu = upper.copy(); fl = lower.copy(); direction = pd.Series(1, index=df.index, dtype=int)
+    for i in range(1, len(df)):
+        fu.iloc[i] = upper.iloc[i] if upper.iloc[i] < fu.iloc[i-1] or df.close.iloc[i-1] > fu.iloc[i-1] else fu.iloc[i-1]
+        fl.iloc[i] = lower.iloc[i] if lower.iloc[i] > fl.iloc[i-1] or df.close.iloc[i-1] < fl.iloc[i-1] else fl.iloc[i-1]
+        if direction.iloc[i-1] == -1 and df.close.iloc[i] > fu.iloc[i]: direction.iloc[i] = 1
+        elif direction.iloc[i-1] == 1 and df.close.iloc[i] < fl.iloc[i]: direction.iloc[i] = -1
+        else: direction.iloc[i] = direction.iloc[i-1]
+    return direction
 
 
 def pivots(df, left=3, right=3):
     highs, lows = [], []
     h, l = df.high.to_numpy(), df.low.to_numpy()
     for i in range(left, len(df)-right):
-        wh, wl = h[i-left:i+right+1], l[i-left:i+right+1]
-        if h[i] == np.max(wh) and np.sum(wh == h[i]) == 1: highs.append(Swing(i, float(h[i]), "high"))
-        if l[i] == np.min(wl) and np.sum(wl == l[i]) == 1: lows.append(Swing(i, float(l[i]), "low"))
+        if h[i] == np.max(h[i-left:i+right+1]) and np.sum(h[i-left:i+right+1] == h[i]) == 1: highs.append((i, float(h[i])))
+        if l[i] == np.min(l[i-left:i+right+1]) and np.sum(l[i-left:i+right+1] == l[i]) == 1: lows.append((i, float(l[i])))
     return highs, lows
 
 
-def _structure_score(df, left=3, right=3):
+def bos_state(df, left=3, right=3):
     highs, lows = pivots(df, left, right)
-    if len(highs) < 3 or len(lows) < 3:
-        return "neutral", "transition", 0, highs, lows
-    hs, ls = highs[-3:], lows[-3:]
-    bull = int(hs[-1].price > hs[-2].price) + int(ls[-1].price > ls[-2].price)
-    bear = int(hs[-1].price < hs[-2].price) + int(ls[-1].price < ls[-2].price)
-    # Recent BOS: closed price must have broken the latest meaningful pivot.
     close = float(df.close.iloc[-1])
-    recent_high = hs[-1].price
-    recent_low = ls[-1].price
-    bos_bull = close > recent_high
-    bos_bear = close < recent_low
-    if bos_bull and bull >= 1: return "bullish", "bullish", 3 + bull, highs, lows
-    if bos_bear and bear >= 1: return "bearish", "bearish", 3 + bear, highs, lows
-    if bull == 2: return "bullish", "bullish", 2, highs, lows
-    if bear == 2: return "bearish", "bearish", 2, highs, lows
-    if bull > bear: return "bullish", "bullish", 1, highs, lows
-    if bear > bull: return "bearish", "bearish", 1, highs, lows
-    return "neutral", "transition", 0, highs, lows
+    bull = bool(highs and close > highs[-1][1])
+    bear = bool(lows and close < lows[-1][1])
+    if bull and not bear: return "bullish"
+    if bear and not bull: return "bearish"
+    # If there is no fresh break, use the latest sequence of swings.
+    if len(highs) >= 2 and len(lows) >= 2:
+        hh = highs[-1][1] > highs[-2][1]; hl = lows[-1][1] > lows[-2][1]
+        lh = highs[-1][1] < highs[-2][1]; ll = lows[-1][1] < lows[-2][1]
+        if hh and hl: return "bullish"
+        if lh and ll: return "bearish"
+    return "neutral"
+
+
+def bias_state(df, left=3, right=3):
+    st = "bullish" if int(supertrend(df).iloc[-1]) == 1 else "bearish"
+    bos = bos_state(df, left, right)
+    if st == bos and bos != "neutral": return st, st, bos
+    # Do not force a trade when the two primary bias engines disagree.
+    return "neutral", st, bos
 
 
 def structure_state(df, left=3, right=3):
-    bias, trend, _, highs, lows = _structure_score(df, left, right)
-    if bias == "bullish" and lows and highs: return bias, trend, lows[-1], highs[-1]
-    if bias == "bearish" and lows and highs: return bias, trend, highs[-1], lows[-1]
-    return "neutral", "transition", None, None
-
-
-def active_swing(df, direction, left=3, right=3):
-    highs, lows = pivots(df, left, right)
-    if direction == "bullish":
-        if not highs or not lows: return None, None
-        b = highs[-1]; candidates = [x for x in lows if x.index < b.index]
-        return (candidates[-1], b) if candidates else (None, None)
-    if not lows or not highs: return None, None
-    b = lows[-1]; candidates = [x for x in highs if x.index < b.index]
-    return (candidates[-1], b) if candidates else (None, None)
+    bias, st, bos = bias_state(df, left, right)
+    return bias, st, None, None
 
 
 def market_regime(df, left=3, right=3):
-    if len(df) < 60: return "transition"
-    highs, lows = pivots(df, left, right)
-    if len(highs) < 4 or len(lows) < 4: return "transition"
-    av = float(atr(df).iloc[-1])
-    if not np.isfinite(av) or av <= 0: return "transition"
-    bull = highs[-1].price > highs[-2].price and lows[-1].price > lows[-2].price
-    bear = highs[-1].price < highs[-2].price and lows[-1].price < lows[-2].price
-    if bull or bear: return "trending"
-    width = float(df.iloc[-40:].high.max() - df.iloc[-40:].low.min())
-    return "ranging" if width <= 10 * av else "transition"
+    if len(df) < 60: return "unknown"
+    a = float(atr(df).iloc[-1]); highs, lows = pivots(df, left, right)
+    if not np.isfinite(a) or not highs or not lows: return "unknown"
+    if len(highs) >= 2 and len(lows) >= 2:
+        if (highs[-1][1] > highs[-2][1] and lows[-1][1] > lows[-2][1]) or (highs[-1][1] < highs[-2][1] and lows[-1][1] < lows[-2][1]): return "trending"
+    return "ranging"
 
 
-def fib_map(direction, a, b):
-    lo, hi = min(a.price, b.price), max(a.price, b.price); r = hi - lo
-    if direction == "bullish":
-        levels = {0.0: hi, .236: hi-r*.236, .382: hi-r*.382, .5: hi-r*.5, .618: hi-r*.618, .786: hi-r*.786, 1.0: lo, 1.618: hi+r*.618, 2.618: hi+r*1.618}
-    else:
-        levels = {0.0: lo, .236: lo+r*.236, .382: lo+r*.382, .5: lo+r*.5, .618: lo+r*.618, .786: lo+r*.786, 1.0: hi, 1.618: lo-r*.618, 2.618: lo-r*1.618}
-    return FibMap(direction, a.index, b.index, a.price, b.price, levels)
+def detect_order_blocks(df, max_base=4, left=3, right=3, min_displacement=.8):
+    a = atr(df); highs, lows = pivots(df, left, right); obs=[]
+    # Compact base immediately before a clear displacement candle.
+    pivot_events = [(i, "bullish") for i,_ in highs] + [(i, "bearish") for i,_ in lows]
+    for i, direction in pivot_events[-50:]:
+        if i < max_base+2 or i+1 >= len(df): continue
+        for n in range(2, max_base+1):
+            s, e = i-n, i-1
+            if s < 0: continue
+            base=df.iloc[s:e+1]; av=float(a.iloc[i]) if np.isfinite(a.iloc[i]) else 0
+            if av <= 0 or float(base.high.max()-base.low.min()) > 1.8*av: continue
+            if direction == "bullish":
+                disp=float(df.high.iloc[i])-float(base.high.max())
+                valid=float(df.close.iloc[i])>float(base.high.max())
+            else:
+                disp=float(base.low.min())-float(df.low.iloc[i])
+                valid=float(df.close.iloc[i])<float(base.low.min())
+            strength=disp/av
+            if valid and strength >= min_displacement:
+                obs.append(OrderBlock(direction,float(base.low.min()),float(base.high.max()),s,e,n,strength))
+                break
+    # Deduplicate overlapping same-side zones; keep strongest/newest.
+    out=[]
+    for ob in sorted(obs,key=lambda x:(x.end_index,x.strength),reverse=True):
+        if any(ob.direction==x.direction and max(ob.low,x.low)<=min(ob.high,x.high) for x in out): continue
+        out.append(ob)
+    return sorted(out,key=lambda x:x.end_index)
 
 
-def _base_ob(df, impulse_end, direction, max_base, av, min_displacement=0.9):
-    # The OB is the compact 1-4 candle base immediately BEFORE displacement.
-    if impulse_end < max_base + 3: return None
-    best = None
-    for base_count in range(2, max_base + 1):
-        base_end = impulse_end - 1
-        base_start = base_end - base_count + 1
-        if base_start < 1: continue
-        base = df.iloc[base_start:base_end+1]
-        local_atr = float(av.iloc[base_end])
-        if not np.isfinite(local_atr) or local_atr <= 0: continue
-        width = float(base.high.max() - base.low.min())
-        if width > 1.8 * local_atr: continue
-        impulse = df.iloc[impulse_end:impulse_end+3]
-        if len(impulse) < 2: continue
-        if direction == "bullish":
-            displacement = float(impulse.close.max()) - float(base.high.max())
-            directional = float(impulse.close.max()) > float(base.high.max())
-        else:
-            displacement = float(base.low.min()) - float(impulse.close.min())
-            directional = float(impulse.close.min()) < float(base.low.min())
-        strength = displacement / local_atr
-        if not directional or strength < min_displacement: continue
-        candidate = OrderBlock(direction, float(base.high.max()), float(base.low.min()), base_start, base_end, impulse_end, base_count, strength)
-        if best is None or (candidate.displacement_atr, candidate.base_count) > (best.displacement_atr, best.base_count): best = candidate
-    return best
-
-
-def detect_fresh_obs(df, max_base=4, left=3, right=3, min_displacement=0.9):
-    av = atr(df); highs, lows = pivots(df, left, right); out = []
-    # Search recent structural pivots only. Do not manufacture an OB from every candle.
-    for sw in highs[-30:]:
-        ob = _base_ob(df, sw.index, "bullish", max_base, av, min_displacement)
-        if ob: out.append(ob)
-    for sw in lows[-30:]:
-        ob = _base_ob(df, sw.index, "bearish", max_base, av, min_displacement)
-        if ob: out.append(ob)
-    unique = []
-    for ob in sorted(out, key=lambda x: (x.end_index, x.displacement_atr), reverse=True):
-        if any(ob.direction == u.direction and max(ob.low,u.low) <= min(ob.high,u.high) for u in unique): continue
-        unique.append(ob)
-    return sorted(unique, key=lambda x: x.end_index)
-
-
-def touches_before_last(ob, df):
-    after = df.iloc[ob.end_index+1:-1]
-    if after.empty: return 0
-    touched = ((after.high >= ob.low) & (after.low <= ob.high)).to_numpy(); count = 0; active = False
-    for x in touched:
-        if x and not active: count += 1
-        active = bool(x)
+def ob_touches(ob, df):
+    after=df.iloc[ob.end_index+1:-1]
+    count=0; inside=False
+    for _,r in after.iterrows():
+        hit=float(r.high)>=ob.low and float(r.low)<=ob.high
+        if hit and not inside: count+=1
+        inside=hit
     return count
 
 
 def invalidated(ob, df):
-    after = df.iloc[ob.end_index+1:]
-    if after.empty: return False
-    return bool(after.close.min() < ob.low) if ob.direction == "bullish" else bool(after.close.max() > ob.high)
+    after=df.iloc[ob.end_index+1:]
+    if after.empty:return False
+    return bool(after.close.min()<ob.low) if ob.direction=="bullish" else bool(after.close.max()>ob.high)
 
 
-def nearest_fib(ob, fmap, av, tolerance_atr=0.45):
-    if not np.isfinite(av) or av <= 0: return None, None, None
-    best = None
-    for level in FIBS:
-        price = fmap.levels[level]
-        distance = max(0.0, max(ob.low-price, price-ob.high)) / av
-        if distance <= tolerance_atr and (best is None or distance < best[0]): best = (distance, level, price)
-    return (best[1], best[2], best[0]) if best else (None, None, None)
+def annotate_obs(df, obs, major=False):
+    for ob in obs:
+        ob.touches=ob_touches(ob,df); ob.status="fresh" if ob.touches==0 else "retested"; ob.major=major
+    return [x for x in obs if not invalidated(x,df)]
 
 
-def _reaction(df, ob, direction):
-    last = df.iloc[-1]
-    touched = float(last.high) >= ob.low and float(last.low) <= ob.high
-    if not touched: return False
-    if direction == "bullish":
-        return float(last.close) > ob.high and float(last.close) > float(last.open)
-    return float(last.close) < ob.low and float(last.close) < float(last.open)
+def _zone_distance(price, ob):
+    if ob.low<=price<=ob.high:return 0.0
+    return min(abs(price-ob.low),abs(price-ob.high))
 
 
-def _make_setup(df, ob, bias, trend, regime, fmap, a, b, min_rr, fib_tol_atr):
-    av = float(atr(df).iloc[-1])
-    if not np.isfinite(av) or av <= 0: return None
-    fib_level, fib_price, fib_dist = nearest_fib(ob, fmap, av, fib_tol_atr)
-    price = float(df.close.iloc[-1])
-    # Entry is the confirmation close, not an arbitrary current price far from the OB.
-    entry = price
-    buffer = max(0.12 * av, (ob.high-ob.low) * 0.08)
-    sl = ob.low - buffer if bias == "bullish" else ob.high + buffer
-    risk = entry - sl if bias == "bullish" else sl - entry
-    if risk <= 0 or risk > 2.0 * av: return None
-
-    # TP hierarchy: nearest meaningful liquidity first, then trend Fib extensions.
-    if bias == "bullish":
-        candidates = [x for x in (b.price, fmap.levels[1.618], fmap.levels[2.618]) if x > entry + risk * min_rr]
-        candidates = sorted(set(candidates))
+def build_setup(df, htf, min_rr=2.5, **kwargs):
+    if len(df)<80 or len(htf)<80:return None
+    left=int(kwargs.get("pivot_left",3)); right=int(kwargs.get("pivot_right",3)); max_base=int(kwargs.get("max_base",kwargs.get("max_base_candles",4))); min_disp=float(kwargs.get("min_displacement",kwargs.get("min_displacement_atr",.8)))
+    exec_bias, st, bos = bias_state(df,left,right)
+    htf_bias, hst, hbos = bias_state(htf,left,right)
+    # Require execution and HTF direction agreement, except a major 4H OB is handled by caller.
+    if exec_bias=="neutral" or htf_bias=="neutral" or exec_bias!=htf_bias:return None
+    obs=annotate_obs(df,detect_order_blocks(df,max_base,left,right,min_disp))
+    price=float(df.close.iloc[-1]); aligned=[]
+    for ob in obs:
+        if ob.direction!=exec_bias:continue
+        if ob.low<=price<=ob.high:
+            aligned.append(ob)
+    if not aligned:return None
+    fresh=[o for o in aligned if o.status=="fresh"]
+    retested=[o for o in aligned if o.status=="retested"]
+    # Fresh OB has priority. If several retested OBs overlap, treat them as one area.
+    selected=fresh[-1] if fresh else max(retested,key=lambda o:o.strength)
+    ob_type="fresh" if fresh else "retested"
+    ob_count=len(fresh) if fresh else len(retested)
+    entry=price
+    a=float(atr(df).iloc[-1]); buffer=max(a*.10,(selected.high-selected.low)*.10)
+    sl=selected.low-buffer if exec_bias=="bullish" else selected.high+buffer
+    risk=entry-sl if exec_bias=="bullish" else sl-entry
+    if risk<=0:return None
+    # TP1 is always >= minimum RR. TP2/3 are structural/liquidity extensions.
+    highs,lows=pivots(df,left,right)
+    if exec_bias=="bullish":
+        targets=[x[1] for x in highs if x[1]>entry+risk*min_rr]
+        targets += [entry+risk*3.5, entry+risk*5.0]
+        targets=sorted(set(targets))
     else:
-        candidates = [x for x in (b.price, fmap.levels[1.618], fmap.levels[2.618]) if x < entry - risk * min_rr]
-        candidates = sorted(set(candidates), reverse=True)
-    if not candidates: return None
-    tp1 = candidates[0]; tp2 = candidates[1] if len(candidates) > 1 else tp1; tp3 = candidates[2] if len(candidates) > 2 else tp2
-    rr1 = abs(tp1-entry) / risk
-
-    score = 65
-    if fib_level is not None: score += 15
-    if ob.displacement_atr >= 1.5: score += 10
-    if ob.base_count in (2,3,4): score += 5
-    if regime == "trending": score += 5
-    if ob.status == "retested": score -= 5
-    reason = (f"HTF {bias} structure + {ob.status} OB reaction | compact base {ob.base_count} candles | "
-              f"displacement {ob.displacement_atr:.1f} ATR | A→B {a.price:.2f}→{b.price:.2f} | "
-              f"Fib {'confluence '+str(fib_level) if fib_level else 'not required'} | regime {regime}")
-    return Setup(bias, entry, sl, tp1, tp2, tp3, rr1, bias, trend, regime, ob.status, ob.low, ob.high, fib_level, fib_price, fib_dist, a.price, b.price, min(score,100), reason)
+        targets=[x[1] for x in lows if x[1]<entry-risk*min_rr]
+        targets += [entry-risk*3.5, entry-risk*5.0]
+        targets=sorted(set(targets),reverse=True)
+    if not targets:return None
+    tp1=targets[0]; tp2=targets[1] if len(targets)>1 else tp1; tp3=targets[2] if len(targets)>2 else tp2
+    rr=abs(tp1-entry)/risk
+    if rr<min_rr:return None
+    return Setup(exec_bias,entry,sl,tp1,tp2,tp3,rr,exec_bias,st,bos,ob_type,selected.low,selected.high,selected.major,ob_count,f"SuperTrend {st.upper()} + BOS {bos.upper()} | {ob_type.upper()} OB | {ob_count} aligned OB(s)")
 
 
-def build_setup(df, htf, min_rr=2.5, fib_tol_atr=.45, pivot_left=3, pivot_right=3, max_base=4, min_displacement=.9):
-    if len(df) < 100 or len(htf) < 100: return None
-    bias, trend, _, _ = structure_state(htf, pivot_left, pivot_right)
-    if bias == "neutral": return None
-    regime = market_regime(htf, pivot_left, pivot_right)
-    if regime == "transition": return None
-    price = float(df.close.iloc[-1]); candidates = []
-
-    # PRIMARY: fresh execution-TF OB. It must be untouched and price must be
-    # returning to it now; confirmation candle closes out of the zone.
-    for ob in detect_fresh_obs(df, max_base, pivot_left, pivot_right, min_displacement):
-        if ob.direction != bias or invalidated(ob, df): continue
-        if touches_before_last(ob, df) != 0: continue
-        in_zone = ob.low <= price <= ob.high
-        if in_zone or _reaction(df, ob, bias):
-            ob.status = "fresh"
-            candidates.append(ob)
-
-    # SECONDARY: retested OB only when the HTF is ranging. The execution TF
-    # must show a fresh reaction from that HTF zone.
-    if regime == "ranging":
-        for ob in detect_fresh_obs(htf, max_base, pivot_left, pivot_right, min_displacement):
-            if ob.direction != bias or invalidated(ob, htf): continue
-            if touches_before_last(ob, htf) < 1: continue
-            in_zone = ob.low <= price <= ob.high
-            if in_zone or _reaction(df, ob, bias):
-                ob.status = "retested"
-                candidates.append(ob)
-
-    if not candidates: return None
-    # Prefer fresh OBs, then the newest/highest displacement zone.
-    fresh = [x for x in candidates if x.status == "fresh"]
-    ob = max(fresh or candidates, key=lambda x: (x.displacement_atr, x.end_index))
-    a, b = active_swing(df, bias, pivot_left, pivot_right)
-    if not a or not b: return None
-    return _make_setup(df, ob, bias, trend, regime, fib_map(bias, a, b), a, b, min_rr, fib_tol_atr)
-
-
-def setup_dict(setup): return asdict(setup) if setup else None
+def setup_dict(s): return asdict(s) if s else None
