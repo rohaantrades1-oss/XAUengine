@@ -1,10 +1,8 @@
 from __future__ import annotations
-
 import time
 from datetime import datetime, timezone, timedelta
 from dataclasses import asdict
 from typing import Any
-
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from strategy import bias_state, build_setup, detect_order_blocks, annotate_obs, pivots, Setup
@@ -35,7 +33,7 @@ class SignalBot:
         if 5*60<=m<14*60:return "ACTIVE","Asia / London"
         return "ACTIVE","Off-session / rollover"
 
-    async def start(self,update:Update,context:ContextTypes.DEFAULT_TYPE):
+    async def start(self,update,context):
         self.chat_id=str(update.effective_chat.id); self.config["chat_id"]=self.chat_id
         await update.message.reply_text("XAUengine\n━━━━━━━━━━━━━━━━━━\n/start  Greetings & commands\n/scan  Manual scan\n/structure  Current TF bias\n/apitest  API usage • latency • price\n/analysis  All TF bias\n/allobs  Bullish & bearish OBs\n/stats  History\n/status  Market • session • price\n/timeframe  5M • 15M • 1H • 4H\n/htf  15M • 1H • 4H • 1D\n\nAutomatic signals: ON\nTP/SL notifications: ON\n\nCurrent TF: "+DISPLAY[self._active_tf()])
 
@@ -52,6 +50,10 @@ class SignalBot:
             self.stats["scans"]+=1; tf=self._active_tf(); setup=self._make_setup(tf)
             await update.message.reply_text(self._signal_text(setup,tf) if setup else f"XAUUSD • {DISPLAY[tf]}\n━━━━━━━━━━━━━━━━━━\nNO TRADE\nNo valid OB entry now.")
         except Exception as exc:self.stats["errors"]+=1; await update.message.reply_text(f"SCAN ERROR\n{type(exc).__name__}: {exc}")
+
+    def _setup_for_auto(self,tf,df):
+        if tf=="4h": return self._major_4h_setup(df)
+        return self._make_setup(tf)
 
     async def structure(self,update,context):
         try:
@@ -73,7 +75,7 @@ class SignalBot:
             try:
                 df=self._fetch(tf); obs=annotate_obs(df,detect_order_blocks(df,4,3,3,.8),major=(tf=="4h")); bull=[o for o in obs if o.direction=="bullish"]; bear=[o for o in obs if o.direction=="bearish"]
                 lines.append(f"{DISPLAY[tf]}\nBULLISH: {len(bull)}  BEARISH: {len(bear)}")
-                for o in (bull[-4:]+bear[-4:]): lines.append(f"  {'BUY' if o.direction=='bullish' else 'SELL'} {o.low:.2f}–{o.high:.2f} {o.status.upper()}"+ (" MAJOR" if o.major else ""))
+                for o in (bull[-4:]+bear[-4:]): lines.append(f"  {'BUY' if o.direction=='bullish' else 'SELL'} {o.low:.2f}–{o.high:.2f} {o.status.upper()}"+(" MAJOR" if o.major else ""))
             except Exception as exc: lines.append(f"{DISPLAY[tf]} ERROR: {type(exc).__name__}")
         await update.message.reply_text("\n".join(lines))
 
@@ -103,13 +105,11 @@ class SignalBot:
     async def stats_cmd(self,update,context):
         await update.message.reply_text(f"XAUengine • HISTORY\n━━━━━━━━━━━━━━━━━━\nSCANS: {self.stats['scans']}\nSIGNALS: {self.stats['signals']}\nTP HITS: {self.stats['tp_hits']}\nSL HITS: {self.stats['sl_hits']}\nERRORS: {self.stats['errors']}\nACTIVE TRADES: {len(self.active_trades)}")
 
-    async def auto_scan(self,context:ContextTypes.DEFAULT_TYPE):
+    async def auto_scan(self,context):
         if not self.chat_id:return
         for tf in SCAN_TFS:
             try:
-                df=self._fetch(tf)
-                setup=self._make_setup(tf)
-                if tf=="4h" and not setup: setup=self._major_4h_setup(df)
+                df=self._fetch(tf); setup=self._setup_for_auto(tf,df)
                 if setup:
                     s=asdict(setup); key=f"{tf}:{s['direction']}:{s['ob_low']:.2f}:{s['ob_high']:.2f}:{s['ob_type']}"
                     if key not in self.signal_keys:
@@ -124,6 +124,7 @@ class SignalBot:
         obs=annotate_obs(df,detect_order_blocks(df,4,3,3,.8),major=True); price=float(df.close.iloc[-1]); zones=[o for o in obs if o.direction==bias and o.low<=price<=o.high]
         if not zones:return None
         ob=max(zones,key=lambda x:x.strength); av=float((df.high-df.low).rolling(14).mean().iloc[-1]); entry=price
+        if not av or av<=0:return None
         sl=ob.low-av*.1 if bias=="bullish" else ob.high+av*.1; risk=entry-sl if bias=="bullish" else sl-entry
         if risk<=0:return None
         tp1=entry+risk*2.5 if bias=="bullish" else entry-risk*2.5; highs,lows=pivots(df,3,3); raw=highs if bias=="bullish" else lows; targets=[x[1] for x in raw if (x[1]>tp1 if bias=="bullish" else x[1]<tp1)]; targets=sorted(targets) if bias=="bullish" else sorted(targets,reverse=True); tp2=targets[0] if targets else (entry+risk*4 if bias=="bullish" else entry-risk*4); tp3=targets[1] if len(targets)>1 else (entry+risk*6 if bias=="bullish" else entry-risk*6)
@@ -133,7 +134,6 @@ class SignalBot:
         trade=self.active_trades.get(tf)
         if not trade:return
         high=float(df.high.iloc[-1]); low=float(df.low.iloc[-1]); bull=trade["direction"]=="bullish"
-        # If both SL and TP are inside one OHLC candle, treat SL first (conservative).
         if bull:
             if low<=trade["sl"]:
                 self.active_trades.pop(tf,None); self.stats["sl_hits"]+=1; await context.bot.send_message(chat_id=self.chat_id,text=f"XAUUSD • {DISPLAY[tf]}\nSL HIT\nSL: {trade['sl']:.2f}"); return
