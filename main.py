@@ -24,16 +24,18 @@ def env_int(name, default):
         return int(default)
 
 
+# Defaults intentionally favor fewer, cleaner setups over signal spam.
+# Runtime values can still be changed from Telegram.
 config = {
     "execution_tf": os.getenv("EXECUTION_TF", "5min"),
     "htf_map": TF_MAP,
     "outputsize": env_int("CANDLES_PER_REQUEST", 300),
-    "min_rr": env_float("MIN_RR", 2.0),
-    "fib_tolerance_atr": env_float("FIB_TOLERANCE_ATR", .20),
+    "min_rr": env_float("MIN_RR", 2.5),
+    "fib_tolerance_atr": env_float("FIB_TOLERANCE_ATR", .45),
     "pivot_left": env_int("PIVOT_LEFT", 3),
     "pivot_right": env_int("PIVOT_RIGHT", 3),
     "max_base_candles": env_int("OB_MAX_BASE_CANDLES", 4),
-    "ob_min_displacement_atr": env_float("OB_MIN_DISPLACEMENT_ATR", 1.2),
+    "ob_min_displacement_atr": env_float("OB_MIN_DISPLACEMENT_ATR", .9),
     "poll_seconds": env_int("POLL_SECONDS", 30),
     "chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
 }
