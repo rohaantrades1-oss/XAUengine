@@ -26,6 +26,8 @@ config = {
     "pivot_left": env_int("PIVOT_LEFT", 3),
     "pivot_right": env_int("PIVOT_RIGHT", 3),
     "max_base_candles": env_int("OB_MAX_BASE_CANDLES", 4),
+    "poll_seconds": env_int("POLL_SECONDS", 30),
+    "chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
 }
 
 if __name__ == "__main__":
