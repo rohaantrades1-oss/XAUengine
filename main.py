@@ -9,13 +9,20 @@ load_dotenv()
 
 TF_MAP = {"1min": "5min", "5min": "15min", "15min": "1h", "1h": "4h"}
 
+
 def env_float(name, default):
-    try: return float(os.getenv(name, default))
-    except ValueError: return float(default)
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
 
 def env_int(name, default):
-    try: return int(os.getenv(name, default))
-    except ValueError: return int(default)
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
 
 config = {
     "execution_tf": os.getenv("EXECUTION_TF", "5min"),
@@ -26,9 +33,13 @@ config = {
     "pivot_left": env_int("PIVOT_LEFT", 3),
     "pivot_right": env_int("PIVOT_RIGHT", 3),
     "max_base_candles": env_int("OB_MAX_BASE_CANDLES", 4),
+    "ob_min_displacement_atr": env_float("OB_MIN_DISPLACEMENT_ATR", 1.2),
     "poll_seconds": env_int("POLL_SECONDS", 30),
     "chat_id": os.getenv("TELEGRAM_CHAT_ID", "").strip(),
 }
+
+if config["execution_tf"] not in TF_MAP:
+    raise SystemExit(f"Unsupported EXECUTION_TF: {config['execution_tf']}. Use 1min, 5min, 15min or 1h.")
 
 if __name__ == "__main__":
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
