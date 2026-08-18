@@ -7,10 +7,13 @@ import requests
 import pandas as pd
 
 _INTERVAL_MINUTES = {"1min": 1, "5min": 5, "15min": 15, "30min": 30, "1h": 60, "4h": 240}
+# The provider does not need to be hit for every Telegram command.  Shorter
+# timeframes refresh more often; higher timeframes are safely cached longer.
+_CACHE_TTL = {"1min": 15, "5min": 25, "15min": 60, "30min": 90, "1h": 180, "4h": 600}
 
 
 class TwelveDataClient:
-    """Twelve Data adapter with round-robin keys, cooldown and closed-candle validation."""
+    """Twelve Data adapter with key rotation, cooldown and candle caching."""
 
     def __init__(self, keys: list[str], symbol: str = "XAU/USD", cooldown_seconds: int = 60, closed_only: bool = True):
         self.keys = [k.strip() for k in keys if k.strip()]
@@ -22,6 +25,11 @@ class TwelveDataClient:
         self.closed_only = closed_only
         self._available_at = {k: 0.0 for k in self.keys}
         self._queue = deque(self.keys)
+        self._cache: dict[str, tuple[float, pd.DataFrame]] = {}
+        self.request_count = 0
+        self.success_count = 0
+        self.cache_hits = 0
+        self.last_errors: list[str] = []
 
     def _next_key(self) -> str:
         now = time.time()
@@ -32,19 +40,32 @@ class TwelveDataClient:
                 return key
         return min(self.keys, key=lambda k: self._available_at.get(k, 0))
 
-    def candles(self, interval: str, outputsize: int = 300) -> pd.DataFrame:
+    def candles(self, interval: str, outputsize: int = 300, force_refresh: bool = False) -> pd.DataFrame:
         if outputsize < 50:
             raise ValueError("outputsize must be >= 50 for structural analysis")
         if interval not in _INTERVAL_MINUTES:
             raise ValueError(f"Unsupported interval: {interval}")
+
+        now = time.time()
+        cached = self._cache.get(interval)
+        ttl = _CACHE_TTL.get(interval, 60)
+        if not force_refresh and cached and now - cached[0] <= ttl:
+            self.cache_hits += 1
+            return cached[1].tail(outputsize).copy().reset_index(drop=True)
 
         errors: list[str] = []
         for _ in range(max(len(self.keys), 1)):
             key = self._next_key()
             wait = self._available_at.get(key, 0) - time.time()
             if wait > 0:
-                time.sleep(min(wait, 5.0))
+                # Never block a Telegram command for a full cooldown. If a recent
+                # cache exists, use it rather than burning the key again.
+                if cached:
+                    self.cache_hits += 1
+                    return cached[1].tail(outputsize).copy().reset_index(drop=True)
+                time.sleep(min(wait, 2.0))
             try:
+                self.request_count += 1
                 response = requests.get(
                     self.base,
                     params={
@@ -78,11 +99,6 @@ class TwelveDataClient:
                     errors.append(f"Missing candle fields: {sorted(missing)}")
                     continue
 
-                # Keep the exchange/provider timestamp intact. Twelve Data can
-                # return timestamps in a provider timezone; converting them to UTC
-                # and comparing against a UTC floor caused valid historical candles
-                # to be discarded as 'future' candles. We only need to exclude the
-                # single newest candle because it may still be forming.
                 df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=False)
                 for col in ("open", "high", "low", "close", "volume"):
                     if col in df.columns:
@@ -91,21 +107,45 @@ class TwelveDataClient:
                 df = df.sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
 
                 if self.closed_only and len(df) > 0:
-                    # Request extra candles and discard only the newest provider
-                    # candle. This is robust to Twelve Data timezone settings.
+                    # Ask for two extra candles and remove only the newest provider
+                    # candle; do not compare provider timestamps to local UTC.
                     df = df.iloc[:-1].reset_index(drop=True)
 
                 if len(df) < 50:
                     errors.append(f"Insufficient closed candles returned: {len(df)}")
                     continue
-                return df.tail(outputsize).reset_index(drop=True)
+
+                result = df.tail(outputsize).reset_index(drop=True)
+                self._cache[interval] = (time.time(), result.copy())
+                self.success_count += 1
+                self.last_errors = []
+                return result
 
             except Exception as exc:
                 errors.append(f"{type(exc).__name__}: {exc}")
                 time.sleep(0.15)
 
+        self.last_errors = errors[-8:]
+        # If the provider temporarily rate-limited us, stale data is still useful
+        # for informational inventory commands. Live signal generation should
+        # require a fresh candle and is handled by the caller.
+        if cached:
+            self.cache_hits += 1
+            return cached[1].tail(outputsize).copy().reset_index(drop=True)
+
         detail = " | ".join(errors[-8:])
         raise RuntimeError(f"All Twelve Data API keys failed for {self.symbol} {interval}: {detail}")
+
+    def usage_snapshot(self) -> dict:
+        now = time.time()
+        return {
+            "keys": len(self.keys),
+            "requests": self.request_count,
+            "successful_requests": self.success_count,
+            "cache_hits": self.cache_hits,
+            "cooling_down": sum(1 for k in self.keys if self._available_at.get(k, 0) > now),
+            "last_errors": list(self.last_errors),
+        }
 
 
 def load_keys() -> list[str]:
