@@ -178,10 +178,10 @@ def _make_setup(df, ob, bias, trend, regime, fmap, a, b, min_rr, fib_tol_atr):
     if not np.isfinite(av) or av <= 0: return None
     fib_level,fib_price,fib_dist=nearest_fib(ob,fmap,av,fib_tol_atr)
     if bias == "bullish":
-        entry=price; sl=ob.low-max(av*.10,.20); risk=entry-sl
+        entry=price; sl=ob.low; risk=entry-sl
         targets=sorted([x for x in (b.price,fmap.levels[1.618],fmap.levels[2.618]) if x>entry])
     else:
-        entry=price; sl=ob.high+max(av*.10,.20); risk=sl-entry
+        entry=price; sl=ob.high; risk=sl-entry
         targets=sorted([x for x in (b.price,fmap.levels[1.618],fmap.levels[2.618]) if x<entry], reverse=True)
     if risk <= 0: return None
     valid=[x for x in targets if abs(x-entry)/risk >= min_rr]
@@ -196,20 +196,25 @@ def _make_setup(df, ob, bias, trend, regime, fmap, a, b, min_rr, fib_tol_atr):
 
 def build_setup(df, htf, min_rr=2.0, fib_tol_atr=.20, pivot_left=3, pivot_right=3, max_base=4, min_displacement=1.2):
     if len(df)<100 or len(htf)<100: return None
-    # HTF = context. Execution TF = entry OB + active A-B swing + Fib.
     bias,trend,_,_=structure_state(htf,pivot_left,pivot_right)
     if bias=="neutral" or trend=="transition": return None
     regime=market_regime(htf,pivot_left,pivot_right)
     if regime=="transition": return None
-    price=float(df.close.iloc[-1]); candidates=[]
+    price=float(df.close.iloc[-1]); last=df.iloc[-1]; candidates=[]
+    # Fresh OB = execution timeframe. A reaction-close beyond the zone is a valid entry trigger.
     for ob in detect_fresh_obs(df,max_base,pivot_left,pivot_right,min_displacement):
-        if ob.direction!=bias or invalidated(ob,df) or not (ob.low<=price<=ob.high): continue
-        if touches_before_last(ob,df)==0:
+        if ob.direction!=bias or invalidated(ob,df): continue
+        touched_now=float(last.high)>=ob.low and float(last.low)<=ob.high
+        reaction=(touched_now and float(last.close)>=ob.high) if bias=="bullish" else (touched_now and float(last.close)<=ob.low)
+        if touches_before_last(ob,df)==0 and ((ob.low<=price<=ob.high) or reaction):
             ob.status="fresh"; candidates.append(ob)
-    # HTF retested OBs are a secondary setup and only allowed in ranging HTF conditions.
+    # Retested OB = HTF only, and only when HTF is genuinely ranging.
     if regime=="ranging":
         for ob in detect_fresh_obs(htf,max_base,pivot_left,pivot_right,min_displacement):
-            if ob.direction==bias and not invalidated(ob,htf) and ob.low<=price<=ob.high and touches_before_last(ob,htf)>=1:
+            if ob.direction!=bias or invalidated(ob,htf) or touches_before_last(ob,htf)<1: continue
+            touched_now=float(last.high)>=ob.low and float(last.low)<=ob.high
+            reaction=(touched_now and float(last.close)>=ob.high) if bias=="bullish" else (touched_now and float(last.close)<=ob.low)
+            if (ob.low<=price<=ob.high) or reaction:
                 ob.status="retested"; candidates.append(ob)
     if not candidates: return None
     fresh=[x for x in candidates if x.status=="fresh"]
