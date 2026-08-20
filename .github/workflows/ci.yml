@@ -2,7 +2,7 @@ name: XAUengine CI
 
 on:
   push:
-    branches: [main, strategy-v1]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python -m py_compile strategy.py market.py bot.py main.py backtest.py
+      - run: python -m py_compile bot.py main.py
