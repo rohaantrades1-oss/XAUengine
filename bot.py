@@ -1,9 +1,5 @@
 from __future__ import annotations
-
-import hashlib
-import html
-import os
-import time
+import hashlib, html, os, time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -15,77 +11,61 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
-NEWS_LOOKBACK_MINUTES = int(os.getenv("NEWS_LOOKBACK_MINUTES", "20"))
-SHOCK_THRESHOLD = float(os.getenv("SHOCK_THRESHOLD", "65"))
-USER_AGENT = "XAUengine-Macro/1.0"
+TELEGRAM_TOKEN=os.getenv('TELEGRAM_BOT_TOKEN',''); FINNHUB_API_KEY=os.getenv('FINNHUB_API_KEY','')
+POLL_SECONDS=int(os.getenv('POLL_SECONDS','30')); NEWS_LOOKBACK_MINUTES=int(os.getenv('NEWS_LOOKBACK_MINUTES','20')); SHOCK_THRESHOLD=float(os.getenv('SHOCK_THRESHOLD','65'))
 
 @dataclass
 class MarketSnapshot:
-    dxy: Optional[float]; us10y: Optional[float]; gold: Optional[float]; btc: Optional[float]
-    nasdaq: Optional[float]; vix: Optional[float]; fetched_at: datetime
-
+    dxy:Optional[float]; us10y:Optional[float]; gold:Optional[float]; btc:Optional[float]; nasdaq:Optional[float]; vix:Optional[float]; fetched_at:datetime
 @dataclass
 class NewsItem:
-    title: str; link: str; published: datetime; source: str; fingerprint: str
+    title:str; link:str; published:datetime; source:str; fingerprint:str
 
 class MacroEngine:
-    NEWS_QUERIES = [
-        "Federal Reserve OR Fed OR FOMC OR Powell", "US Treasury OR Treasury yields OR bond buyback OR debt",
-        "CPI OR PCE OR PPI OR NFP OR payrolls OR unemployment OR jobless claims",
-        "tariff OR sanctions OR war OR ceasefire OR geopolitical", "Bitcoin OR crypto OR ETF OR SEC OR CFTC",
-    ]
-    RSS_FEEDS = [
-        ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_all.xml"),
-        ("US Treasury", "https://home.treasury.gov/rss/press-releases.xml"),
-    ]
-    SYMBOLS = {"dxy":"DX-Y.NYB", "us10y":"^TNX", "gold":"GC=F", "btc":"BTC-USD", "nasdaq":"^IXIC", "vix":"^VIX"}
-
+    NEWS_QUERIES=['Federal Reserve OR Fed OR FOMC OR Powell','US Treasury OR Treasury yields OR bond buyback OR debt','CPI OR PCE OR PPI OR NFP OR payrolls OR unemployment OR jobless claims','tariff OR sanctions OR war OR ceasefire OR geopolitical','Bitcoin OR crypto OR ETF OR SEC OR CFTC']
+    RSS_FEEDS=[('Federal Reserve','https://www.federalreserve.gov/feeds/press_all.xml'),('US Treasury','https://home.treasury.gov/rss/press-releases.xml')]
+    SYMBOLS={'dxy':'DX-Y.NYB','us10y':'^TNX','gold':'GC=F','btc':'BTC-USD','nasdaq':'^IXIC','vix':'^VIX'}
     def __init__(self):
-        self.session = requests.Session(); self.session.headers.update({"User-Agent": USER_AGENT}); self.seen=set()
+        self.session=requests.Session(); self.session.headers.update({'User-Agent':'XAUengine-Macro/1.0'}); self.seen=set()
     def _get(self,url,timeout=8):
         r=self.session.get(url,timeout=timeout); r.raise_for_status(); return r
     def _yahoo(self,symbol):
         try:
-            data=self._get(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}?range=1d&interval=1m").json()
-            for v in reversed(data["chart"]["result"][0]["indicators"]["quote"][0]["close"]):
+            data=self._get(f'https://query1.finance.yahoo.com/v8/finance/chart/{quote_plus(symbol)}?range=1d&interval=1m').json()
+            for v in reversed(data['chart']['result'][0]['indicators']['quote'][0]['close']):
                 if v is not None:return float(v)
-        except Exception as e: print(f"market {symbol}: {type(e).__name__}: {e}")
+        except Exception as e:print(f'market {symbol}: {type(e).__name__}: {e}')
         return None
     def market_snapshot(self):
         v={k:self._yahoo(s) for k,s in self.SYMBOLS.items()}; return MarketSnapshot(**v,fetched_at=datetime.now(timezone.utc))
     def _parse_rss(self,xml,source):
         import xml.etree.ElementTree as ET
         out=[]
-        try: root=ET.fromstring(xml)
+        try:root=ET.fromstring(xml)
         except ET.ParseError:return out
         for item in root.findall('.//item')[:30]:
             title=html.unescape((item.findtext('title') or '').strip()); link=(item.findtext('link') or '').strip(); raw=(item.findtext('pubDate') or '').strip()
             if not title or not link:continue
-            try: published=parsedate_to_datetime(raw).astimezone(timezone.utc) if raw else datetime.now(timezone.utc)
-            except Exception: published=datetime.now(timezone.utc)
+            try:published=parsedate_to_datetime(raw).astimezone(timezone.utc) if raw else datetime.now(timezone.utc)
+            except Exception:published=datetime.now(timezone.utc)
             fp=hashlib.sha256(f'{title}|{link}'.encode()).hexdigest()[:16]; out.append(NewsItem(title,link,published,source,fp))
         return out
     def news(self):
         items=[]
         for source,url in self.RSS_FEEDS:
-            try:items += self._parse_rss(self._get(url).text,source)
-            except Exception as e:print(f"rss {source}: {type(e).__name__}: {e}")
+            try:items+=self._parse_rss(self._get(url).text,source)
+            except Exception as e:print(f'rss {source}: {type(e).__name__}: {e}')
         for query in self.NEWS_QUERIES:
             try:
-                url='https://news.google.com/rss/search?q='+quote_plus(query+' when:1h')+'&hl=en-US&gl=US&ceid=US:en'
-                items += self._parse_rss(self._get(url).text,'Google News')
-            except Exception as e:print(f"google news: {type(e).__name__}: {e}")
+                url='https://news.google.com/rss/search?q='+quote_plus(query+' when:1h')+'&hl=en-US&gl=US&ceid=US:en'; items+=self._parse_rss(self._get(url).text,'Google News')
+            except Exception as e:print(f'google news: {type(e).__name__}: {e}')
         cutoff=datetime.now(timezone.utc).timestamp()-NEWS_LOOKBACK_MINUTES*60; unique={x.fingerprint:x for x in items if x.published.timestamp()>=cutoff}
         return sorted(unique.values(),key=lambda x:x.published,reverse=True)
     def calendar(self):
         if not FINNHUB_API_KEY:return []
         try:
-            d=datetime.now(timezone.utc).date().isoformat(); data=self._get(f'https://finnhub.io/api/v1/calendar/economic?from={d}&to={d}&token={FINNHUB_API_KEY}').json()
-            return [e for e in data.get('economicCalendar',[]) if e.get('country')=='US' and e.get('impact',0)>=2]
-        except Exception as e:print(f"calendar: {type(e).__name__}: {e}"); return []
+            d=datetime.now(timezone.utc).date().isoformat(); data=self._get(f'https://finnhub.io/api/v1/calendar/economic?from={d}&to={d}&token={FINNHUB_API_KEY}').json(); return [e for e in data.get('economicCalendar',[]) if e.get('country')=='US' and e.get('impact',0)>=2]
+        except Exception as e:print(f'calendar: {type(e).__name__}: {e}'); return []
     def classify(self,item):
         t=item.title.lower(); high=['fomc','federal reserve','powell','rate cut','rate hike','emergency','treasury','bond buyback','debt ceiling','default','cpi','pce','nfp','payroll','unemployment','jobless claims','tariff','sanction','war','ceasefire','invasion','bitcoin etf','sec','cftc']; medium=['inflation','yield','auction','gdp','pmi','retail sales','crypto','bitcoin','gold']
         score=min(100.,15+sum(14 for k in high if k in t)+sum(5 for k in medium if k in t)); category='MACRO'
@@ -112,15 +92,13 @@ class MacroEngine:
 
 class MacroBot:
     def __init__(self,token):
-        self.engine=MacroEngine(); self.chat_id=None; self.last=None; self.stats={'checks':0,'alerts':0,'errors':0}
-        self.app=Application.builder().token(token).build()
+        self.engine=MacroEngine(); self.chat_id=None; self.last=None; self.stats={'checks':0,'alerts':0,'errors':0}; self.app=Application.builder().token(token).build()
         for cmd,fn in [('start',self.start),('status',self.status),('macro',self.macro),('news',self.news_cmd),('calendar',self.calendar_cmd),('test',self.test)]:self.app.add_handler(CommandHandler(cmd,fn))
         if self.app.job_queue:self.app.job_queue.run_repeating(self.poll,interval=POLL_SECONDS,first=3,name='macro-engine')
     async def start(self,u,c):
         self.chat_id=u.effective_chat.id; await u.message.reply_text('🚨 XAUengine • MACRO INTELLIGENCE\n━━━━━━━━━━━━━━━━━━\nLive macro/news shock monitoring: ON\n\n/macro — DXY, US10Y, Gold, BTC\n/news — latest macro headlines\n/calendar — scheduled US events\n/status — engine status\n/test — data-source test\n\nNo trade execution. Macro context only.')
     async def macro(self,u,c):
-        try:
-            s=self.engine.market_snapshot(); r=self.engine.reaction(self.last,s); self.last=s; await u.message.reply_text(self.snapshot(s,r))
+        try:s=self.engine.market_snapshot(); r=self.engine.reaction(self.last,s); self.last=s; await u.message.reply_text(self.snapshot(s,r))
         except Exception as e:await u.message.reply_text(f'❌ MACRO ERROR\n{type(e).__name__}: {e}')
     async def news_cmd(self,u,c):
         items=self.engine.news()[:8]
@@ -144,8 +122,9 @@ class MacroBot:
     @staticmethod
     def snapshot(s,r):
         def f(v):return '—' if v is None else f'{v:.4f}'
-        def q(k):return '—' if r.get(k) is None else f"{'+' if r[k]>=0 else ''}{r[k]:.2f}%"
-        return f'📊 LIVE MACRO SNAPSHOT\n━━━━━━━━━━━━━━━━━━\nDXY: {f(s.dxy)}\nUS10Y: {f(s.us10y)}\nXAUUSD proxy: {f(s.gold)}\nBTC: {f(s.btc)}\nNASDAQ: {f(s.nasdaq)}\nVIX: {f(s.vix)}\n\nREACTION\nDXY: {q("DXY")}\nGold: {q("GOLD")}\nBTC: {q("BTC")}\nUS10Y: {"—" if r.get("US10Y_bps") is None else f"{r["US10Y_bps"]:+.1f} bps"}'
+        def q(k):return '—' if r.get(k) is None else f'{r[k]:+.2f}%'
+        y='—' if r.get('US10Y_bps') is None else f"{r['US10Y_bps']:+.1f} bps"
+        return f'📊 LIVE MACRO SNAPSHOT\n━━━━━━━━━━━━━━━━━━\nDXY: {f(s.dxy)}\nUS10Y: {f(s.us10y)}\nXAUUSD proxy: {f(s.gold)}\nBTC: {f(s.btc)}\nNASDAQ: {f(s.nasdaq)}\nVIX: {f(s.vix)}\n\nREACTION\nDXY: {q("DXY")}\nGold: {q("GOLD")}\nBTC: {q("BTC")}\nUS10Y: {y}'
     async def poll(self,c):
         if not self.chat_id:return
         try:
