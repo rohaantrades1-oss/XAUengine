@@ -1,30 +1,37 @@
-# XAUengine
+# XAUengine — Macro Intelligence
 
-Deterministic XAUUSD signal engine focused on the original core: structural bias/trend, fresh impulse-base order blocks, structural A→B Fibonacci location, and selective HTF retested OBs.
+XAUengine is now a Telegram **macro/news shock detector** for XAUUSD, BTC and the USD/rates complex.
 
-## Strategy hierarchy
+## What it monitors
 
-`Bias → Regime → Structure/Swing → Fresh OB → Fib location → Entry/SL/TP`
+- Breaking macro/news headlines from official Federal Reserve and US Treasury feeds plus broad Google News RSS searches
+- DXY, US 10Y, Gold, BTC, Nasdaq and VIX market reaction
+- Optional scheduled US economic calendar through Finnhub
+- Fed/rates, Treasury/yields, inflation/jobs, geopolitics and major crypto headlines
 
-Fresh OBs are primary. Retested OBs are secondary and primarily enabled for ranging HTF conditions. Fibonacci is a confluence/location tool, not a mandatory standalone trigger.
+## Alert logic
 
-## Timeframe mapping
+A headline is classified by macro impact, then combined with the live market reaction. High combined scores generate a Telegram **MACRO SHOCK** alert containing the headline, category, directional hint, DXY/yield/gold/BTC reaction and source link.
 
-- 1m → 5m HTF
-- 5m → 15m HTF
-- 15m → 1h HTF
-- 1h → 4h HTF
+This is intentionally **not** a trade-execution system and does not issue guaranteed buy/sell signals.
 
-## Safety
+## Commands
 
-This repository is signal/paper-trading oriented. It does not place broker orders. Never commit API keys or Telegram tokens; use environment variables.
+- `/start` — bind the current Telegram chat and show commands
+- `/macro` — current macro market snapshot
+- `/news` — latest macro headlines with impact scores
+- `/calendar` — scheduled high-impact US events when Finnhub is configured
+- `/status` — engine status
+- `/test` — source/latency test
 
-## Run
+## Setup
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
+# add TELEGRAM_BOT_TOKEN
+# optionally add FINNHUB_API_KEY
 python main.py
 ```
 
-The initial build includes a Twelve Data-compatible market adapter, Telegram signal bot, deterministic strategy engine, and backtest harness. Historical data should be used to calibrate thresholds before enabling live alerts.
+Never commit Telegram or API credentials.
